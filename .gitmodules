@@ -1,0 +1,3 @@
+[submodule "submodules/cantera_julia"]
+	path = submodules/cantera_julia
+	url = git@github.com:colinpavan/cantera_julia.git
