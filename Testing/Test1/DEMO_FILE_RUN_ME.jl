@@ -7,12 +7,9 @@ using LinearAlgebra
 include(topdir*"src/DE_Construction/DE_Model.jl")
 include((@__DIR__)*"/conservation_checks.jl")
 const ct = DE_Model.ct
+const mech_file=abspath(topdir*"data/mechanisms/MeOH_Synth.yaml")
 
-gas = DE_Model.initialize_ideal_gas("gri30.yaml")
-specs = ["CO", "CO2", "H2", "CH3OH", "H2O", "N2"]
-cfg = DE_Model.set_gas_constants(gas, specs)
-
-gasses = [DE_Model.initialize_ideal_gas("gri30.yaml") for _ in 1:3]
+gasses = [DE_Model.initialize_ideal_gas(mech_file) for _ in 1:3]
 rhocat = 1e3  # kg/m^3 catalyst effective density
 
 
@@ -44,24 +41,22 @@ gas_props0 = (250+273.15, 100e3, "H2:0.75, CO2:0.25, CO:0.0")
 gas_props1 = (300.0, 100e3, "N2:1.0")
 foreach(g -> ct.setTPX(g, gas_props1), gasses[2:3])
 
-spec_ind = cfg.spec_ind
-Nspec    = cfg.Nspec
+Nspec = gasses[1].gas.Nspec
 
-u0_ext = [[Preact*100e3, 250+273.15]; gasses[1].X[spec_ind[1:end-1]]]
-u0_cyl = [[Pin*100e3, 25+273.15]; gasses[2].X[spec_ind[1:end-1]]]
+u0_ext = [[Preact*100e3, 250+273.15]; gasses[1].X[1:end-1]]
+u0_cyl = [[Pin*100e3, 25+273.15]; gasses[2].X[1:end-1]]
 u0     = [u0_ext; u0_cyl; u0_cyl]
 
 gas_tmp = gasses[1]
 ct.setTPX(gas_tmp, gas_props0)
 
-TPX_intake  = (25+273.15, Pin*100e3,  gas_tmp.X[spec_ind[1:end-1]])
-TPX_exhaust = (25+273.15, Pout*100e3, gas_tmp.X[spec_ind[1:end-1]])
+TPX_intake  = (25+273.15, Pin*100e3,  gas_tmp.X)
+TPX_exhaust = (25+273.15, Pout*100e3, gas_tmp.X)
 
 params = DE_Model.ReactorParams(gasses, Vfunc, rhocat,
                                 [250.0, 85.0, 85.0] .+ 273.15,
                                 [50, 500, 500]*1e-3,
-                                [0.002, 0.002, 0.02, 0.02],
-                                cfg)
+                                [0.002, 0.002, 0.02, 0.02])
 
 # Mode objects — created once, reused every cycle
 mode_ex      = DE_Model.IntakeExhaust(TPX_exhaust)
@@ -75,7 +70,7 @@ tex = tp[1:floor(Int, length(tp)/2)+1]
 tin = tp[floor(Int, length(tp)/2)+1:end]
 
 ##################
-Ncycle = 30
+Ncycle = 10
 tcycle = tcomp * 2
 
 u = u0'
@@ -121,6 +116,8 @@ end
 yA = u[:, 1:1+Nspec]
 yB = u[:, Nspec+2:2*(1+Nspec)]
 yC = u[:, 2*(1+Nspec)+1:end]
+
+specs = ct.get_speciesName_all(gasses[1].gas)
 
 using Plots, Measures
 begin

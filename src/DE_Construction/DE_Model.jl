@@ -9,53 +9,45 @@ const ct = cantera_jl
 
 # Default ODE solver: Rodas5P with finite-difference Jacobians.
 # AutoFiniteDiff is permanently required because the Cantera C-library interface
-# is opaque to Julia's AD systems (ForwardDiff, Enzyme, Zygote) — same as PyCall was.
+# is opaque to Julia's AD systems (ForwardDiff, Enzyme, Zygote) -- same as PyCall was.
 const _default_alg = ODE.Rodas5P(autodiff=ODE.AutoFiniteDiff())
 
-# ── Mechanism constants (set once per mechanism, then passed through params) ──
-struct ModelConfig
-    spec_ind::Vector{Int}     # 1-based Cantera species indices for tracked species
-    spec_MW::Vector{Float64}  # molecular weights (kg/kmol) for tracked species
-    Nspec::Int                # number of tracked species (including bath gas)
-    intE0::Vector{Float64}    # formation enthalpies h0 (J/kg) for tracked species
-end
-
-# ── Pre-allocated scratch buffers for the ODE hot path ───────────────────────
+# Pre-allocated scratch buffers for the ODE hot path
 mutable struct ReactorScratch
-    Mass::Matrix{Float64}    # 3N×3N  full mass matrix
-    MCB::Matrix{Float64}     # 2N×2N  B+C block (before FBD transform)
-    FBD::Matrix{Float64}     # 2N×2N  block-diagonal FBD transform for B+C
-    BC_prod::Matrix{Float64} # 2N×2N  result of MCB*FBD (B+C mass matrix)
+    Mass::Matrix{Float64}    # 3N x 3N  full mass matrix
+    MCB::Matrix{Float64}     # 2N x 2N  B+C block (before FBD transform)
+    FBD::Matrix{Float64}     # 2N x 2N  block-diagonal FBD transform for B+C
+    BC_prod::Matrix{Float64} # 2N x 2N  result of MCB*FBD (B+C mass matrix)
     RHS::Vector{Float64}     # 3N     right-hand side buffer
     r::Vector{Float64}       # 3      kinetic rates [r1, r2, r3]
 end
 
-function ReactorScratch(Nspec::Int)
+function ReactorScratch(Nspec::Integer)
     N = Nspec + 1
     ReactorScratch(zeros(3N, 3N), zeros(2N, 2N), zeros(2N, 2N), zeros(2N, 2N),
                    zeros(3N), zeros(3))
 end
 
-# ── Simulation parameters (one per simulation) ───────────────────────────────
+# Simulation parameters (one per simulation).
+# All mechanism constants (MW, h0) are read directly from the gas object via spec_ind,
+# so no separate ModelConfig struct is needed.
 struct ReactorParams{G, F<:Function}
     gasses::Vector{G}         # gas_jl objects, one per region (A, B, C)
-    Vfunc::F                  # t → (V, dV)  displaced-volume kinematics
-    rhocat::Float64           # catalyst effective density (kg/m³)
+    Vfunc::F                  # t -> (V, dV)  displaced-volume kinematics
+    rhocat::Float64           # catalyst effective density (kg/m3)
     T_walls::Vector{Float64}  # wall temperatures [T_A, T_B, T_C] (K)
-    τ::Vector{Float64}        # heat-loss time constants [τ_A, τ_B, τ_C] (s)
-    K_vals::Vector{Float64}   # pressure-drop coefficients:
-                              #   [K_BA_rev, K_BA_fwd, K_IE_in, K_IE_out]
-    config::ModelConfig
+    tau::Vector{Float64}      # heat-loss time constants [tau_A, tau_B, tau_C] (s)
+    K_vals::Vector{Float64}   # pressure-drop coefficients [K_BA_rev, K_BA_fwd, K_IE_in, K_IE_out]
     scratch::ReactorScratch
 end
 
-function ReactorParams(gasses::Vector{G}, Vfunc::F, rhocat, T_walls, τ, K_vals,
-                       config::ModelConfig) where {G, F<:Function}
-    ReactorParams{G,F}(gasses, Vfunc, rhocat, T_walls, τ, K_vals, config,
-                       ReactorScratch(config.Nspec))
+function ReactorParams(gasses::Vector{G}, Vfunc::F, rhocat, T_walls, tau, K_vals
+                       ) where {G, F<:Function}
+    ReactorParams{G,F}(gasses, Vfunc, rhocat, T_walls, tau, K_vals,
+                       ReactorScratch(gasses[1].gas.Nspec))
 end
 
-# ── ODE mode hierarchy ────────────────────────────────────────────────────────
+# ODE mode hierarchy
 abstract type ReactorMode end
 
 struct Decoupled <: ReactorMode end  # A and B+C volumes pressure-decoupled
@@ -72,11 +64,7 @@ include((@__DIR__)*"/Common_Matrices.jl")
 include((@__DIR__)*"/RHS_functions.jl")
 include((@__DIR__)*"/Intake_Exhaust.jl")
 
-# ── Module globals (set by set_gas_constants for legacy / interactive use) ────
-spec_ind = Int[]
-spec_MW  = Float64[]
-Nspec    = 0
-intE0    = Float64[]
+# Module globals
 _kinetics_initialized = false
 
 function initialize_ideal_gas(ct_mech)
@@ -90,15 +78,6 @@ function initialize_ideal_gas(ct_mech)
         DE_Model._kinetics_initialized = true
     end
     return ct.initialize_gas_jl(ct_mech)
-end
-
-# Returns a ModelConfig and also updates the legacy module globals.
-function set_gas_constants(gas, specs)
-    DE_Model.spec_ind = [ct.get_speciesIndex(gas.gas, n) + 1 for n in specs]
-    DE_Model.spec_MW  = gas.MW_spec[DE_Model.spec_ind]
-    DE_Model.Nspec    = length(specs)
-    DE_Model.intE0    = gas.h0[DE_Model.spec_ind]
-    return ModelConfig(DE_Model.spec_ind, DE_Model.spec_MW, DE_Model.Nspec, DE_Model.intE0)
 end
 
 function Vars_Eq_condition(u, _t, _integrator, inds)

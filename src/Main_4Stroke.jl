@@ -10,7 +10,7 @@ const ct = DE_Model.ct
 
 gas = DE_Model.initialize_ideal_gas("gri30.yaml")
 specs = ["CO", "CO2", "H2", "CH3OH", "H2O", "N2"]
-cfg = DE_Model.set_gas_constants(gas, specs)
+spec_ind = DE_Model.set_gas_constants(gas, specs)
 
 gasses = [DE_Model.initialize_ideal_gas("gri30.yaml") for _ in 1:3]
 rhocat = 1e3  # kg/m^3 catalyst effective density
@@ -44,8 +44,7 @@ gas_props0 = (250+273.15, 100e3, "H2:0.75, CO2:0.25, CO:0.0")
 gas_props1 = (300.0, 100e3, "N2:1.0")
 foreach(g -> ct.setTPX(g, gas_props1), gasses[2:3])
 
-spec_ind = cfg.spec_ind
-Nspec    = cfg.Nspec
+Nspec = length(spec_ind)
 
 u0_ext = [[Preact*100e3, 250+273.15]; gasses[1].X[spec_ind[1:end-1]]]
 u0_cyl = [[Pin*100e3, 25+273.15]; gasses[2].X[spec_ind[1:end-1]]]
@@ -61,7 +60,7 @@ params = DE_Model.ReactorParams(gasses, Vfunc, rhocat,
                                 [250.0, 85.0, 85.0] .+ 273.15,
                                 [50, 500, 500]*1e-3,
                                 [0.002, 0.002, 0.02, 0.02],
-                                cfg)
+                                spec_ind)
 
 # Mode objects — created once, reused every cycle
 mode_ex      = DE_Model.IntakeExhaust(TPX_exhaust)

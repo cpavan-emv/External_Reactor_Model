@@ -2,24 +2,24 @@
 # (typically: const ct = DE_Model.ct)
 
 function get_rhoU(gas, y, region)
-    N     = DE_Model.Nspec + 1
+    Nspec = gas.gas.Nspec
+    N     = Nspec + 1
     rho_u = Matrix{Float64}(undef, size(y, 1), 2)
     for i in axes(y, 1)
-        offset = (region - 1) * N
-        ct.setTPX(gas,
-            (y[i, offset+2], y[i, offset+1], y[i, offset+3:offset+N]),
-            DE_Model.spec_ind)
+        offset    = (region - 1) * N
+        X_partial = y[i, offset+3:offset+N]
+        ct.setTPX(gas, (y[i, offset+2], y[i, offset+1], [X_partial; 1.0 - sum(X_partial)]))
         rho_u[i, :] .= [gas.rho, gas.int_nrg]
     end
     return rho_u
 end
 
 function get_rhoU_single_vol(gas, y)
+    Nspec = gas.gas.Nspec
     rho_u = Matrix{Float64}(undef, size(y, 1), 2)
     for i in axes(y, 1)
-        ct.setTPX(gas,
-            (y[i, 2], y[i, 1], y[i, 3:end]),
-            DE_Model.spec_ind)
+        X_partial = y[i, 3:Nspec+1]
+        ct.setTPX(gas, (y[i, 2], y[i, 1], [X_partial; 1.0 - sum(X_partial)]))
         rho_u[i, :] .= [gas.rho, gas.int_nrg]
     end
     return rho_u
