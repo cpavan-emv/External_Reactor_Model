@@ -90,7 +90,8 @@ function Mcom(gas)
 end
 
 # Couples clearance (B) and displaced (C) volumes under constant-pressure constraint
-function Mass_BC(gasB, gasC, V_dV, scratch::ReactorScratch)
+# OBSOLETE -> clearance and displaced volumes now treated as one
+function Mass_BC_OBS(gasB, gasC, V_dV, scratch::ReactorScratch)
     Nr  = gasB.gas.Nspec + 1   # per-region state dimension [P, T, X1..X_{Nspec-1}]
     MCB = scratch.MCB
     FBD = scratch.FBD
@@ -128,24 +129,42 @@ function Mass_BC(gasB, gasC, V_dV, scratch::ReactorScratch)
     return scratch.BC_prod
 end
 
-# Mass matrix for region A (always independent)
-function Mass_A(gas)
+# Uncoupled mass matrix
+function Mass_region(gas)
     return Mcom(gas) * Fcom(gas) * Bcom(gas) * Dcom(gas)
 end
 
 # Full 3-region mass matrix: A independent, B and C coupled at constant pressure
-function Mass_full(u, params::ReactorParams, t)
+function Mass_full_OBS(u, params::ReactorParams, t)
     scratch  = params.scratch
-    gasses   = params.gasses
+    gases   = params.gases
     V_dV     = params.Vfunc(t)
-    N        = gasses[1].gas.Nspec + 1
+    N        = gases[1].gas.Nspec + 1
     for i in 1:3
         offset   = N * (i - 1)
         X_partial = u[offset+3:offset+N]
-        ct.setTPX(gasses[i], (u[offset+2], u[offset+1], [X_partial; 1.0 - sum(X_partial)]))
+        ct.setTPX(gases[i], (u[offset+2], u[offset+1], [X_partial; 1.0 - sum(X_partial)]))
     end
     fill!(scratch.Mass, 0.0)
-    scratch.Mass[1:N, 1:N]         .= Mass_A(gasses[1])
-    scratch.Mass[N+1:end, N+1:end] .= Mass_BC(gasses[2], gasses[3], V_dV, scratch)
+    scratch.Mass[1:N, 1:N]         .= Mass_A(gases[1])
+    scratch.Mass[N+1:end, N+1:end] .= Mass_BC(gases[2], gases[3], V_dV, scratch)
+    return scratch.Mass
+end
+
+# simplified 2 region version
+function Mass_full(u, params::ReactorParams, t)
+    scratch  = params.scratch
+    gases   = params.gases
+    Vinst    = params.Vfunc(t)[1]
+    beta     = params.beta
+    N        = gases[1].gas.Nspec + 1
+    for i in 1:2
+        offset   = N * (i - 1)
+        X_partial = u[offset+3:offset+N]
+        ct.setTPX(gases[i], (u[offset+2], u[offset+1], [X_partial; 1.0 - sum(X_partial)]))
+    end
+    fill!(scratch.Mass, 0.0)
+    scratch.Mass[1:N, 1:N]         .= Mass_region(gases[1])*beta
+    scratch.Mass[N+1:end, N+1:end] .= Mass_region(gases[2])*Vinst
     return scratch.Mass
 end

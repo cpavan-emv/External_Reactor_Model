@@ -14,6 +14,32 @@ Three-volume compression model:
 #   r1: CO + 2H2 -> CH3OH
 #   r2: CO2 + H2 -> CO + H2O
 #   r3: CO2 + 3H2 -> CH3OH + H2O
+
+const _N2_=6950 # q in sLm, P in bar, T in K
+const _rho_ref = 1.18 # kg/m3 -> reference density
+
+function sigmoid(x, x0)
+    return 0
+end
+# from swagelok sizing buletin
+# https://www.swagelok.com/downloads/webcatalogs/EN/MS-06-84.pdf
+function _mdot_cv(Cv, P_up, P_dn, T_up, M_up)
+    x =(P_up - P_dn) / P_up
+    deltaP_bar=(P_up-P_dn)/100e3
+    rhog=P_up/(T_up*ct.Ru/M_up)
+    Gg=rhog/_rho_ref
+    #if x >= 0.5
+        q1= _N2_ * Cv * P_up/100e3 * (1-2*deltaP_bar/(3*P_up/100e3))*
+            sqrt(deltaP_bar/(P_up/100e3*Gg*T_up))
+    #else
+        q2=0.471*_N2_ *Cv*P_up/100e3*sqrt(1/(Gg*T_up))
+    #end
+
+    q=q1*0.5*(tanh.(-(x - 0.5)*50)+1) + q2*0.5*(tanh((x-0.5)*50)+1) 
+
+    return q/(60*1000)*101.325e3/(ct.Ru*298.15)*M_up 
+end
+
 const _rxn_stoich = ((-1, 1, 0),    # CO
                      (0, -1, -1),   # CO2
                      (-2, -1, -3),  # H2
@@ -21,9 +47,9 @@ const _rxn_stoich = ((-1, 1, 0),    # CO
                      (0, 1, 1))     # H2O
 
 function RHS_Common!(RHS, u, params::ReactorParams, t)
-    gasses = params.gasses
+    gases = params.gases
     V_dV   = params.Vfunc(t)
-    Nspec  = gasses[1].gas.Nspec
+    Nspec  = gases[1].gas.Nspec
     N      = Nspec + 1
     rhocat = params.rhocat
     Tw     = params.T_walls
@@ -31,22 +57,17 @@ function RHS_Common!(RHS, u, params::ReactorParams, t)
     r      = params.scratch.r
 
     # Kinetics in region A -- catalyst at wall temperature, composition from current gas state
-    r .= rhocat .* [ct.MeOH_kinetics.r1(Tw[1], u[1]/100e3, gasses[1].X),
-                    ct.MeOH_kinetics.r2(Tw[1], u[1]/100e3, gasses[1].X),
-                    ct.MeOH_kinetics.r3(Tw[1], u[1]/100e3, gasses[1].X)]
+    r .= rhocat .* [ct.MeOH_kinetics.r1(Tw[1], u[1]/100e3, gases[1].X),
+                    ct.MeOH_kinetics.r2(Tw[1], u[1]/100e3, gases[1].X),
+                    ct.MeOH_kinetics.r3(Tw[1], u[1]/100e3, gases[1].X)]
     r[isnan.(r)] .= 0.0  # pure-N2 guard
     r[isinf.(r)] .= 0.0
 
     # Heat loss to walls for all three regions
-    for i in 1:3
-        k = gasses[i].rho * gasses[i].cp / tau[i]
+    for i in 1:2
+        k = gases[i].rho * gases[i].cp / tau[i]
         RHS[(i-1)*N+2] = -k * (u[(i-1)*N+2] - Tw[i])
     end
-
-    # Upstream direction for compression/expansion flow between B and C
-    gasup = V_dV[2] > 0 ? gasses[2] : gasses[3]
-    rhoC  = gasses[3].rho
-    Yup   = gasup.Y[1:end-1]
 
     # Region A: species production. rxn_spec_ind[i] gives the 1-based mechanism position of
     # each reaction species, which equals its position in the state-vector species block.
@@ -55,18 +76,13 @@ function RHS_Common!(RHS, u, params::ReactorParams, t)
         j = ct.MeOH_kinetics.rxn_spec_ind[i]
         j == Nspec && continue
         nu_i = _rxn_stoich[i][1]*r[1] + _rxn_stoich[i][2]*r[2] + _rxn_stoich[i][3]*r[3]
-        RHS[2+j] += gasses[1].MW_spec[j] * 1e-3 * nu_i
+        RHS[2+j] += gases[1].MW_spec[j] * 1e-3 * nu_i*params.beta
     end
 
-    # Region B: mass exchange with C
-    RHS[N+1]     += -rhoC * V_dV[2]
-    RHS[N+2]     += -gasup.enthalpy * rhoC * V_dV[2]
-    RHS[N+3:2*N] .+= -rhoC * Yup * V_dV[2]
-
-    # Region C: exchange with B, changing volume (no reactions)
-    RHS[2*N+1]    = 0.0  # pressure equation replaced by equal-pressure constraint
-    RHS[2*N+2]   += (gasup.enthalpy - gasses[3].enthalpy) * rhoC * V_dV[2] / V_dV[1]
-    RHS[2*N+3:end] .+= (Yup .- gasses[3].Y[1:end-1]) * rhoC * V_dV[2] / V_dV[1]
+    # Region B: changing volume, no reactions
+    RHS[N+1]   -= gases[2].rho * V_dV[2]
+    RHS[N+2]   -= gases[2].enthalpy * gases[2].rho * V_dV[2]
+    RHS[N+3:end] .-= gases[2].Y[1:end-1]*gases[2].rho * V_dV[2]
 end
 
 function f_decoupled!(du, u, p, t)
@@ -80,27 +96,35 @@ function f_decoupled!(du, u, p, t)
 end
 
 function f_coupled!(du, u, p, t)
-    params, mode = p
+    params, _ = p
     Mass = Mass_full(u, params, t)
     RHS  = params.scratch.RHS
+    gases=params.gases
     fill!(RHS, 0.0)
     RHS_Common!(RHS, u, params, t)
-    N = params.gasses[1].gas.Nspec + 1
+    N = params.gases[1].gas.Nspec + 1
 
-    # Mass flow between B and A via finite pressure drop
+    # Mass flow between B and A via Cv valve model
+    # Cv_vals[1]: reactor-inlet valve (compression stroke, dV/dt < 0)
+    # Cv_vals[2]: reactor-outlet valve (expansion stroke, dV/dt > 0)
     V_dV = params.Vfunc(t)
-    Vex  = mode.Vex
-    K    = V_dV[2] > 0 ? params.K_vals[2] : params.K_vals[1]
-    mdot_BA = K * (u[N+1] - u[1])
-    gasup   = mdot_BA > 0 ? params.gasses[2] : params.gasses[1]
+    Cv   = V_dV[2] > 0 ? params.Cv_vals[2] : params.Cv_vals[1]
+    P_A, P_B = u[1], u[N+1]
+    if P_B >= P_A
+        mdot_BA =  _mdot_cv(Cv, P_B, P_A, u[N+2], gases[2].MW_mix)
+    else
+        mdot_BA = -_mdot_cv(Cv, P_A, P_B, u[2],   gases[1].MW_mix)
+    end
+    gasup = mdot_BA > 0 ? gases[2] : gases[1]
+    mdot_BA /= params.Vd
 
     RHS[1]      += mdot_BA
-    RHS[N+1]    -= mdot_BA * Vex / V_dV[1]
+    RHS[N+1]    -= mdot_BA
     RHS[2]      += gasup.enthalpy * mdot_BA
-    RHS[N+2]    -= gasup.enthalpy * mdot_BA * Vex / V_dV[1]
+    RHS[N+2]    -= gasup.enthalpy * mdot_BA
     Yup          = gasup.Y[1:end-1]
     RHS[3:N]    .+= mdot_BA * Yup
-    RHS[N+3:2*N] .-= mdot_BA * Yup * Vex / V_dV[1]
+    RHS[N+3:2*N] .-= mdot_BA * Yup
 
     du .= Mass \ RHS
     return nothing
@@ -110,21 +134,30 @@ function f_intake_exhaust!(du, u, p, t)
     params, mode = p
     Mass = Mass_full(u, params, t)
     RHS  = params.scratch.RHS
+    gases=params.gases
     fill!(RHS, 0.0)
     RHS_Common!(RHS, u, params, t)
-    N = params.gasses[1].gas.Nspec + 1
+    N = params.gases[1].gas.Nspec + 1
 
     V_dV         = params.Vfunc(t)
     TPX_exterior = mode.TPX_exterior
 
     # Use gas A slot as scratch for exterior state.
     # TPX_exterior must carry the full Nspec-element X vector.
-    gas_ex = params.gasses[1]
+    # Cv_vals[3]: exhaust valve (compression stroke, dV/dt < 0)
+    # Cv_vals[4]: intake valve  (expansion stroke, dV/dt > 0)
+    gas_ex = params.gases[1]
     ct.setTPX(gas_ex, TPX_exterior)
-    Pex     = TPX_exterior[2]
-    K       = V_dV[2] > 0 ? params.K_vals[4] : params.K_vals[3]
-    mdot_in = K * (Pex - u[N+1])   # positive = flow in; backflow allowed
-    gasup   = mdot_in < 0 ? params.gasses[2] : gas_ex
+    Pex = TPX_exterior[2]
+    Cv  = V_dV[2] > 0 ? params.Cv_vals[4] : params.Cv_vals[3]
+    P_B = u[N+1]
+    if Pex >= P_B
+        mdot_in =  _mdot_cv(Cv, Pex, P_B, TPX_exterior[1], gas_ex.MW_mix)
+    else
+        mdot_in = -_mdot_cv(Cv, P_B, Pex, u[N+2], gases[2].MW_mix)
+    end
+    gasup = mdot_in < 0 ? gases[2] : gas_ex
+    mdot_in /= params.Vd
 
     RHS[N+1]     += mdot_in
     RHS[N+2]     += gasup.enthalpy * mdot_in
@@ -140,9 +173,9 @@ end
 function _run_ode(prob, p, tsave, condition, alg)
     if !isnothing(condition)
         cb  = ODE.ContinuousCallback(condition, integrator -> terminate!(integrator))
-        sol = ODE.solve(prob, alg, p=p, reltol=1e-8, abstol=1e-10, saveat=tsave, callback=cb)
+        sol = ODE.solve(prob, alg, p=p, reltol=1e-10, abstol=1e-12, saveat=tsave, callback=cb)
     else
-        sol = ODE.solve(prob, alg, p=p, reltol=1e-8, abstol=1e-10, saveat=tsave)
+        sol = ODE.solve(prob, alg, p=p, reltol=1e-10, abstol=1e-12, saveat=tsave)
     end
     return sol.t, permutedims(stack(sol.u))
 end
