@@ -50,9 +50,7 @@ abstract type ReactorMode end
 
 struct Decoupled <: ReactorMode end  # Separate external volume and cylinder
 
-struct Coupled <: ReactorMode        # External volume and cylinder connected
-    Vex::Float64                  
-end
+struct Coupled <: ReactorMode end      # External volume and cylinder connected                  
 
 struct IntakeExhaust <: ReactorMode  # intake or exhaust valve open
     TPX_exterior::Tuple              # (T_K, P_Pa, X_vec_or_string) of the manifold
