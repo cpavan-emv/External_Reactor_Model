@@ -40,8 +40,13 @@ function Bcom(gas)
 end
 
 # F converts d(rho T Y) to cv*dT + sum(yi * intE0_i)
+
+function h_spec(gas::fluid_props.gas_jl)
+    return fluid_props.get_partialMolarEnthalpies(gas.gas) ./ gas.MW_spec
+end
+
 function Fcom!(F, gas)
-    h0 = gas.h0
+    h0 = h_spec(gas)
     F .= LinearAlgebra.diagm(ones(size(F, 1)))
     F[2, 2] = gas.cv
     for i in 1:size(F, 1)-2
@@ -52,7 +57,7 @@ end
 
 function Fcom(gas)
     Nspec = gas.gas.Nspec
-    h0    = gas.h0
+    h0    = h_spec(gas)
     F = LinearAlgebra.diagm(ones(Nspec + 1))
     F[2, 2] = gas.cv
     for i in 1:Nspec-1
@@ -63,7 +68,7 @@ end
 
 function Fcom_vec(gas)
     Nspec = gas.gas.Nspec
-    h0    = gas.h0
+    h0    = h_spec(gas)
     F = zeros(Nspec + 1)
     F[2] = gas.cv
     for i in 1:Nspec-1
